@@ -9,7 +9,7 @@ finish the installation and report generator compilation
 
 ## Database building:
 
-There is a pre-compiled database archived (built in Apr 2026). Email shaoming.xiao@cuanschutz for more information
+There is a pre-compiled database archived (built in Apr 2026). Email shaoming.xiao@cuanschutz.edu for more information
 
 If building from scratch in alpine:
 
