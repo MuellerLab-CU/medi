@@ -28,15 +28,38 @@ ncbi_rsync <- function(url, out) {
     return(ret)
 }
 
+## modified wget function
+ncbi_https_download <- function(url, out) {
+    # 1. Clean up the double slashes (//) created by the script's URL pasting
+    clean_url <- gsub("([^:])//", "\\1/", url)
+    
+    # 2. Use wget over HTTPS instead of the broken NCBI rsync module
+    ## -c option allows resuming partial downloads without starting over
+    ret <- system2("wget", c("--quiet", "-c", "--retry-connrefused", "--waitretry=2", "--read-timeout=30", "-t", "5", "-O", out, clean_url))
+
+    # 3. Verify the gzip file is healthy
+    if (ret == 0) {
+        gz_test <- system2("gzip", c("-t", out), stderr = FALSE, stdout = FALSE)
+        if (gz_test != 0) {
+            # unlink(out) # Delete the broken file instantly
+            return(1)   # Trigger a retry
+        }
+    }
+    
+    Sys.chmod(out, "0755")
+    return(ret)
+}
+
 download_genome <- function(hit, out_dir="sequences") {
     hit <- copy(hit[1])
     id <- basename(hit$url)
     hit$url <- paste0(hit$url, "/", id, "_genomic.fna.gz")
     hit$filename <- file.path(out_dir, paste0(id, ".fna.gz"))
     for (i in 0:7) {
-        if (file.exists(hit$filename)) unlink(hit$filename)
+        # if (file.exists(hit$filename)) unlink(hit$filename)
         ret <- tryCatch(
-            ncbi_rsync(hit$url, hit$filename),
+            #ncbi_rsync(hit$url, hit$filename),
+            ncbi_https_download(hit$url, hit$filename),
             error = function(e) return(1),
             warning = function(e) return(1)
         )
@@ -45,16 +68,49 @@ download_genome <- function(hit, out_dir="sequences") {
     }
     if (ret != 0) {
         flog.error("Failed downloading %s :(", hit$url)
-        stop()
+        stop("Download failed")
     }
-    fa <- readDNAStringSet(hit$filename)
-    short_names <- tstrsplit(names(fa), "\\s+")[[1]]
-    names(fa) <- paste0(short_names, "_", 1:length(short_names),
-                        "|kraken:taxid|", as.character(hit$matched_taxid),
-                        " ", names(fa))
-    writeXStringSet(fa, hit$filename, compress = "gzip")
-    hit$num_records <- length(fa)
-    hit$seqlength <- as.double(sum(width(fa)))
+
+    ## the original biostring header modification, memory intensive
+    #fa <- readDNAStringSet(hit$filename)
+    #short_names <- tstrsplit(names(fa), "\\s+")[[1]]
+    #names(fa) <- paste0(short_names, "_", 1:length(short_names),
+    #                    "|kraken:taxid|", as.character(hit$matched_taxid),
+    #                    " ", names(fa))
+    #writeXStringSet(fa, hit$filename, compress = "gzip")
+    #hit$num_records <- length(fa)
+    #hit$seqlength <- as.double(sum(width(fa)))
+
+    ## The awk streaming way
+    flog.info("Mofidying FASTA header for %s via streaming...", id)
+    tmp_file <- paste0(hit$filename, ".tmp")
+    taxid <- as.character(hit$matched_taxid)
+    
+    awk_cmd <- sprintf(
+        paste0(
+            'zcat %s | ',
+            'awk -v taxid="%s" ',
+            '\'/^>/ { ',
+                'shortname=substr($1,2); ',
+                'count++; ',
+                'printf(">%%s_%%d|kraken:taxid|%%s %%s\\n", shortname, count, taxid, substr($0,2)); ',
+                'next ',
+            '} ',
+            '{print}\' | ',
+            'gzip > %s'
+        ), 
+        hit$filename, taxid, tmp_file
+    )
+    sys_ret <- system(awk_cmd)
+    if (sys_ret != 0) {
+        flog.error("Header modification failed for %s", id)
+        stop("AWK header modification failed")
+    }
+    file.rename(tmp_file, hit$filename)
+
+    # --- Sequence Stats via Bash ---
+    hit$num_records <- as.numeric(system(sprintf("zcat %s | grep -c '^>'", hit$filename), intern=TRUE))
+    hit$seqlength <- as.numeric(system(sprintf("zcat %s | grep -v '^>' | tr -d '\n' | wc -c", hit$filename), intern=TRUE))
     flog.info("Downloaded genome for assembly %s...", id)
     return(hit)
 }

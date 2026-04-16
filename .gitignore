@@ -2,3 +2,7 @@
 work
 .nextflow.log*
 src
+report*
+timeline*
+trace*
+data

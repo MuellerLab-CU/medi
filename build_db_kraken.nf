@@ -24,8 +24,6 @@ workflow {
     }
 
     build_kraken_db(db)
-    self_classify(build_kraken_db.out)
-    build_bracken(self_classify.out) | add_info
 }
 
 
@@ -33,18 +31,22 @@ process setup_kraken_db {
     cpus 1
     memory "8 GB"
 
+    // Add Nextflow's auto-retry
+    errorStrategy 'retry'
+    maxRetries 3
+
     output:
     path("medi_db")
 
     script:
     """
-    kraken2-build --download-taxonomy --db medi_db
+    kraken2-build --download-taxonomy --db medi_db --use-ftp
     """
 }
 
 process add_sequences {
-    cpus 5
-    memory "16 GB"
+    cpus 16
+    memory "52 GB"
     publishDir params.out
 
     input:
@@ -63,8 +65,8 @@ process add_sequences {
 }
 
 process add_existing {
-    cpus 4
-    memory "16 GB"
+    cpus 16
+    memory "64 GB"
 
     input:
     path(db)
@@ -76,16 +78,16 @@ process add_existing {
     script:
     if (group == "human")
         """
-        kraken2-build --download-library $group --db $db --no-mask --threads ${task.cpus}
+        kraken2-build --download-library $group --db $db --no-mask --threads ${task.cpus} --use-ftp
         """
     else
         """
-        kraken2-build --download-library $group --db $db --threads ${task.cpus}
+        kraken2-build --download-library $group --db $db --threads ${task.cpus} --use-ftp
         """
 }
 
 process build_kraken_db {
-    cpus params.threads
+    cpus 32
     memory "${params.maxDbSize} GB"
 
     input:
@@ -98,78 +100,6 @@ process build_kraken_db {
     """
     kraken2-build --build --db $db \
         --threads ${task.cpus} \
-        --max-db-size ${(params.max_db_size as BigInteger) * (1000G**3)}
-    """
-}
-
-
-process self_classify {
-    cpus 1
-    memory "${params.maxDbSize} GB"
-
-    input:
-    path(db)
-
-    output:
-    path(db)
-
-    script:
-    """
-    kraken2 --db ${db} --threads ${task.cpus} \
-        --confidence ${params.confidence} \
-        --threads ${task.cpus} \
-        --memory-mapping ${db}/library/*/*.f*a > ${db}/database.kraken
-    """
-}
-
-process build_bracken {
-    cpus 20
-    memory "64 GB"
-    publishDir params.out
-
-    input:
-    path(db)
-
-    output:
-    path("$db")
-
-    script:
-    """
-    bracken-build -d $db -t ${task.cpus} -k 35 -l 100 && \
-    bracken-build -d $db -t ${task.cpus} -k 35 -l 150
-    """
-}
-
-process library {
-    cpus 1
-    memory "4 GB"
-
-    input:
-    path(db)
-
-    output:
-    path("$db/library/*/*.f*a")
-
-    script:
-    """
-    ls ${db}/library/*/*.f*a | wc -l
-    """
-}
-
-process add_info {
-    cpus 1
-    memory "1 GB"
-    publishDir params.out
-
-    input:
-    path(db)
-
-    output:
-    path("$db")
-
-    script:
-    """
-    cp ${params.downloads}/dbs/{food_matches.csv,food_contents.csv.gz} ${db}
-    cp ${params.downloads}/manifest.csv ${db}
+        --max-db-size ${(params.maxDbSize as BigInteger) * (1000G**3)}
     """
 }

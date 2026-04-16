@@ -125,7 +125,7 @@ process match_taxids {
 
 process download_sequences {
     cpus 8
-    memory "64 GB"
+    memory "8 GB"
 
     publishDir params.out
 

@@ -19,6 +19,7 @@ params.batchsize = 400
 params.maxcpus = 24
 params.dbmem = null
 params.help = false
+params.processed = false
 
 /* Helper functions */
 
@@ -50,6 +51,7 @@ def helpMessage() {
     Options:
       General:
         --single_end                Set if the data is single-end. Default: false.
+        --processed                 Set if the data has been preprocessed. Default: false.
         --trim_front <int>          Number of bases to trim from the 5' end of reads. Default: 5.
         --min_length <int>          Minimum length of reads to keep. Default: 50.
         --quality_threshold <int>   Minimum quality score to keep a base. Default: 20.
@@ -99,8 +101,13 @@ workflow {
             .set{raw}
     }
 
-    // quality filtering
-    preprocess(raw)
+    // quality filtering: accept preprocessed data
+    if (params.processed) {
+        copy_preprocessed(raw)
+    } else {
+        preprocess(raw)
+    }
+
 
     // quantify taxa abundances
     batched = preprocess.out    // buffer the samples into batches
@@ -134,14 +141,16 @@ workflow {
     add_lineage.out.collect() | quantify
 
     // quality overview
-    multiqc(merge_taxonomy.out.map{it[1]}.collect())
+    if (!params.processed) {
+        multiqc(merge_taxonomy.out.map{it[1]}.collect())
+    }
 }
 
 /* Process definitions */
 
 process preprocess {
     cpus 4
-    memory "6 GB"
+    memory "8 GB"
     publishDir "${params.out_dir}/preprocessed"
     time "1h"
 
@@ -173,9 +182,36 @@ process preprocess {
         """
 }
 
+process copy_preprocessed {
+    cpus 1
+    memory "4 GB"
+    publishDir "{params.out_dir}/preprocessed"
+    time "1h"
+
+    input:
+    tuple val(id), path(reads)
+
+    output:
+    tuple val(id),
+        path("{id}_filtered_R*.fastq.gz")
+
+    script:
+    if (params.single_end)
+        """
+        cp ${reads[0]} ${id}_filtered_R1.fastq.gz
+        """
+    else
+        """
+        cp ${reads[0]} ${id}_filtered_R1.fastq.gz && \
+        cp ${reads[1]} ${id}_filtered_R2.fastq.gz
+        """
+}
+
+
+
 process kraken {
     cpus params.maxcpus
-    memory { estimate_db_size("${params.db}/hash.k2d") }
+    memory "460 GB"
     time { 2.h + reads.size() * 0.5.h }
     scratch false
     publishDir "${params.data_dir}/kraken2"
@@ -192,10 +228,30 @@ process kraken {
 
     import sys
     import os
+    import shutil
     from subprocess import run
 
+    # create space in shared RAM
+    task_id = "${task.hash}"
+    shm_db = f"/dev/shm/medi_db_{task_id}"
+
+    if not os.path.exists(shm_db):
+        print(f"Creating RAM disk directory: {shm_db}...", flush=True)
+        os.makedirs(shm_db, exist_ok=True)
+
+    print("Copying .k2d files to RAM disk...", flush=True)
+    run([
+        "rsync", "-a", 
+        "${params.db}/hash.k2d", 
+        "${params.db}/taxo.k2d", 
+        "${params.db}/opts.k2d", 
+        shm_db + "/"
+        ], check=True)
+        
+    print("Transfer to RAM disk complete. Starting batch...", flush=True)
+
     base_args = [
-        "kraken2", "--db", "${params.db}",
+        "kraken2", "--db", shm_db,
         "--confidence", "${params.confidence}",
         "--threads", "${task.cpus}", "--gzip-compressed"
     ]
@@ -228,7 +284,13 @@ process kraken {
         if res.returncode != 0:
             if os.path.exists(f"{idx}.k2"):
                 os.remove(f"{idx}.k2")
+            print("Kraken crashed! Cleaning up RAM disk...", flush=True)
+            shutil.rmtree(shm_db, ignore_errors=True)
             sys.exit(res.returncode)
+
+
+    print(f"Batch complete. Erasing RAM disk: {shm_db}...", flush=True)
+    shutil.rmtree(shm_db, ignore_errors=True)
     """
 }
 
@@ -278,7 +340,7 @@ process summarize_mappings {
     time 1.h
 
     input:
-    tuple val(id), path(k2), path(report)
+    tuple val(id), path(k2)
 
     output:
     path("${id}_mapping.csv")
