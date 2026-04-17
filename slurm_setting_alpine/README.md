@@ -19,6 +19,10 @@ If building from scratch in alpine:
 sbatch download_db_submit.sh [THE PATH TO LOCAL MEDI FOLDER] nextflow.config
 ```
 
+Tips:
+
+- Configure `.Rprofile`: put your NCBI API key in bracket for downloading from NCBI
+
 2. Build kraken database (We split the original kraken_build.nf into two due to max time limit of 7 days in alpine server)
 
 ```bash
